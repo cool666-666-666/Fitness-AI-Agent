@@ -1,0 +1,9 @@
+.venv/
+frontend/.venv/
+vector_db/
+phoenix_data/
+logs/
+data/
+ConvAgentBruno/
+.github/
+.vscode/

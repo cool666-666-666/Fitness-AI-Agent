@@ -1,0 +1,151 @@
+services:
+  # ===========================
+  # AI Agent 后端服务（FastAPI）
+  # ===========================
+  agent:
+    build: .                      # 使用当前目录下的 Dockerfile 构建镜像
+    platform: linux/amd64         # 指定运行平台，避免 ARM/Mac 兼容问题
+    restart: unless-stopped       # 容器异常退出自动重启，手动停止除外
+
+    # 挂载数据卷，实现数据持久化
+    volumes:
+      - ./data:/data              # 保存业务数据
+      - ./logs:/logs              # 保存日志文件
+      - ./src:/src                # 源码挂载，修改本地文件无需重建镜像（开发用）
+
+    # 依赖服务，启动前等待数据库和向量库可用
+    depends_on:
+      qdrant:
+        condition: service_started
+      mysql:
+        condition: service_healthy
+
+    # 映射宿主机端口 -> 容器端口
+    ports:
+      - "8001:8001"
+
+    # 开发模式：覆盖启动命令，启用热重载（修改源码自动重启）
+    command: uv run uvicorn src.agent.main:app --host 0.0.0.0 --port 8001 --reload
+
+    # 加载环境变量文件
+    env_file:
+      - .env
+
+    # 覆盖或补充环境变量
+    environment:
+      - QDRANT_URL=http://qdrant
+      # MySQL 数据库连接地址
+      - DATABASE_URL=mysql+aiomysql://root:root@mysql:3306/fitness_agent
+      # Phoenix 链路追踪地址
+      - PHOENIX_COLLECTOR_ENDPOINT=http://phoenix:6006/v1/traces
+
+  # ===========================
+  # Streamlit 前端页面
+  # ===========================
+  streamlit_app:
+    build:
+      context: .                  # 构建上下文
+      dockerfile: Dockerfile.frontend  # 使用前端专用 Dockerfile
+    platform: linux/amd64
+
+    # 前端依赖后端服务
+    depends_on:
+      - agent
+
+    ports:
+      - "8501:8501"               # 浏览器访问端口
+
+    # 挂载源码目录，修改本地文件 Streamlit 自动刷新
+    volumes:
+      - ./frontend:/app
+
+    environment:
+      - BACKEND_HOST=agent        # 指向后端服务名称（Docker 内部通信）
+      - UV_LINK_MODE=copy         # 避免 Windows 符号链接问题
+
+  # ===========================
+  # MySQL 8.4 数据库
+  # ===========================
+  mysql:
+    image: mysql:8.4
+    container_name: fitness_mysql
+
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: fitness_agent
+
+    ports:
+      - "3307:3306"
+
+    # 数据持久化目录
+    volumes:
+      - ./mysql_data:/var/lib/mysql
+
+    # 健康检查，确保数据库已启动
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ===========================
+  # Qdrant 向量数据库
+  # ===========================
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant
+
+    # 指定配置文件启动
+    command: ["./qdrant", "--config-path", "config/qdrant.yaml"]
+
+    volumes:
+      # 向量数据持久化
+      - ./vector_db:/qdrant/storage
+
+      # 挂载自定义配置文件
+      - ./config/qdrant.yaml:/qdrant/config/qdrant.yaml
+
+    ports:
+      - "6333:6333"   # REST API
+      - "6334:6334"   # gRPC API
+
+    # 日志轮换配置
+    logging:
+      driver: "json-file"
+      options:
+        max-file: "1"      # 最多保留 1 个日志文件
+        max-size: "10m"    # 单个日志最大 10MB
+
+    # 容器资源限制
+    deploy:
+      resources:
+        limits:
+          memory: 2Gb
+
+    # 健康检查接口
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/livez"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ===========================
+  # Phoenix 链路追踪与可观测平台
+  # ===========================
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    # 建议版本 > 4.0，支持 OpenTelemetry Trace
+
+    ports:
+      - "6006:6006"   # Phoenix Web UI
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+      # - "9090:9090" # 可选：Prometheus 监控端口
+
+    environment:
+      # Phoenix 工作目录
+      - PHOENIX_WORKING_DIR=/mnt/data
+
+    volumes:
+      # 持久化 Phoenix 数据
+      - ./phoenix_data:/mnt/data

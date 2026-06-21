@@ -1,0 +1,43 @@
+name: Tests
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.13", "3.14"]
+
+    env:
+      # Dummy values for required config
+      AZURE_OPENAI_ENDPOINT: "https://dummy.openai.azure.com/"
+      AZURE_OPENAI_API_KEY: "dummy_key"
+      OPENAI_API_KEY: "dummy_key"
+      GEMINI_API_KEY: "dummy_key"
+      VCR_RECORD_MODE: "none"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: uv sync --all-extras --dev
+
+      - name: Run tests
+        run: make test
+
+      - name: Run VCR replay tests
+        run: make test-vcr
