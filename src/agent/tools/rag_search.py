@@ -42,10 +42,12 @@ async def rag_search_tool(
         包含相关文档片段及元数据的 JSON 字符串。
     """
     try:
-        retriever = get_retriever(k=top_k, collection_name=collection_name)
+        # 粗筛阶段：多拉候选文档（默认 40 条），充分发挥混合检索的召回优势
+        # 稠密向量覆盖语义相关，BM25 覆盖关键词匹配，两者互补
+        retriever = get_retriever(k=config.retrieval_k, collection_name=collection_name)
         docs = await retriever.ainvoke(query)
 
-        # 如果配置了重排序器，对检索结果进行重排序
+        # 精排阶段：用 FlashRank 对粗筛结果重排序，截断到 top_k 条
         if config.rerank_provider != "none":
             from agent.utils.reranker import get_reranker
             reranker = get_reranker(
@@ -53,6 +55,9 @@ async def rag_search_tool(
                 top_k=min(top_k, len(docs)),
             )
             docs = reranker(docs, query)
+        else:
+            # 未启用重排序时直接截断
+            docs = docs[:top_k]
 
         # 格式化结果 —— 返回内容 + 元数据，不生成最终回答
         results = []
